@@ -1,0 +1,155 @@
+    #!/bin/bash
+         
+        declare -A DEVTREE 
+         
+        check_env() {
+           # Validate if nvme-cli package is installed
+           if [ -f /etc/redhat-release ]; then
+              #
+              SETOS="RedHatISH"
+           elif [ -f  /etc/os-release ]; then
+              #
+              grep ^NAME /etc/os-release | grep -q "Amazon Linux"
+              #
+              if [ $? -eq 0 ]; then
+                 #
+                 SETOS="Amazon"
+              fi
+           elif [ -f  /etc/lsb-release ]; then
+              #
+              grep DISTRIB_ID /etc/lsb-release | grep -q Ubuntu
+              #
+              if [ $? -eq 0 ]; then
+                 #
+                 SETOS="UbuntuISH"
+              fi
+           elif [ -f /etc/SuSE-release ]; then
+              #
+              SETOS="SUSEish"
+           else
+               #
+               SETOS="UnsupportedISH"
+           fi
+           if [ ${SETOS} == "RedHatISH" ]; then
+             #
+             rpm -q --quiet nvme-cli
+             if [ $? -ne 0 ]; then
+                #
+                yum -y install nvme-cli
+             fi
+           elif [ ${SETOS} == "Amazon" ]; then
+             #
+             rpm -q --quiet nvme-cli
+             if [ $? -ne 0 ]; then
+                #
+                yum -y install nvme-cli
+             fi
+           elif [ ${SETOS} == "UbuntuISH" ]; then
+             #
+             dpkg -l nvme-cli > /dev/null 2>&1
+             if [ $? -ne 0 ]; then
+                #
+                apt-get update && apt-get install nvme-cli
+              fi
+           elif [ ${SETOS} == "SUSEish" ]; then
+               #
+             rpm -q --quiet nvme-cli
+             if [ $? -ne 0 ]; then
+                #
+                zypper install -y nvme-cli
+             fi
+           else
+             #
+             echo "Hummm..weird distro. Perhaps an unsupported distribution or a bug in the code :)"
+             echo "Either way this I'm exiting...."
+             exit 1
+           fi
+        }
+         
+        check_devname() {
+           # Validate NVME device naming
+           #
+           if [[ "${NVME_DEV}" == "all" ]]; then
+              #
+              for each in $(nvme list | awk '{ print $1 }' | egrep -v 'Node|------' | sort -t'/' -k3 --sort=version); do
+                 #
+                 NVME_DEV=$(echo ${each})
+                 gather_dev_info "${NVME_DEV}"
+              done
+           elif [[ "${NVME_DEV}" =~ ^\/dev\/nvme([0-9]|1[0-9]|2[0-6])n1 ]]; then
+              #
+              return
+           else
+              #
+              echo "Wrong NVME device name, it must be a device name or the keyword all."
+              echo "Examples:"
+              echo "For a specific device:"
+              echo "$0 /dev/nvme1n1"
+              echo "For all devices:"
+              echo "$0 all"
+              exit 1
+           fi
+        }
+         
+        gather_dev_info() {
+           # Get all NVME device info
+           NVMEDUMP=`/usr/sbin/nvme id-ctrl -v ${NVME_DEV}`
+           #
+           if [ $? -ne 0 ]; then
+              #
+              echo "Error while getting nvme device info"
+              exit 1
+           fi
+           #
+           DEV_STRIP=$(echo ${NVME_DEV} | sed -e 's/\/dev\///g')
+           #VOLID=`echo "${NVMEDUMP}" | egrep 'sn      : vol' | awk '{ print $3 }'`
+           DEVNAME=$(echo "${NVMEDUMP}" | egrep '^0000:' | awk '{ print $18 }' | sed -E 's/(\.)|(\")//g')
+           if [ -z ${DEVNAME} ]; then
+              #
+              DEVNAME="Instance Store NVMe Device"
+           fi
+           #
+           DEVTREE[${DEV_STRIP}]="${VOLID}:${DEVNAME}"
+        }
+         
+        parse_and_print() {
+           # Parse result and print output
+           echo "+--------------------------------------+"
+           echo "|           *** RESULTS ***            |"
+           echo "+--------------------------------------+"
+           echo "| NVMe Device              EBS Dev Map |"
+           echo "+--------------------------------------+"
+           for key in $(echo "${!DEVTREE[@]}" | sed -E 's/ /\n/g' | sort --sort=version); do
+              #
+              #echo "   +---------------------------------+"
+              #echo "      Linux device name: ${key}"
+              #echo "   +---------------------------------+"
+              #
+              TT1=$(echo ${DEVTREE[${key}]} | awk -F: '{ print $1 }')
+              TT2=$(echo ${DEVTREE[${key}]} | awk -F: '{ print $2 }')
+              if [ ${#TT2}  -le 3 ] && [ ${#key} -le 7 ]; then
+                 echo -e "|   $key              $TT2     |"
+              elif [ ${#TT2}  -le 3 ] && [ ${#key} -gt 7 ]; then
+                 echo -e "|   $key              $TT2     |"
+              elif [ ${#TT2}  -gt 3 ] && [ ${#key} -le 7 ]; then
+                 if [[ "${TT2}" == *"Store"* ]]; then
+                 echo -e "|   $key   | **** $TT2 **** |"
+                 else
+                 echo -e "|   $key              $TT2     |"
+                 fi
+              fi
+              #
+           done
+           echo "+----------------------------------------------------+"
+        }
+           # Main - Start here :)
+           if [ -z ${1} ]; then
+              echo "You must supply a NVME device."
+              exit 1
+           else
+              NVME_DEV=$(echo ${1})
+           fi
+           check_env
+           check_devname
+           gather_dev_info
+           parse_and_print
